@@ -1,0 +1,27 @@
+# env files
+.env
+.env.*
+!.env.example
+
+# Go
+backend/bin/
+backend/tmp/
+*.test
+coverage.out
+
+# Node
+node_modules/
+frontend/dist/
+frontend/coverage/
+*.tsbuildinfo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local AI assistant context (contains local dev credentials)
+CLAUDE.md
+CLAUDE.local.md
+
+PROGRESS.txt

@@ -1,0 +1,719 @@
+openapi: 3.1.0
+info:
+  title: Boilerplate API
+  version: 0.1.0
+  description: |
+    REST API for the Go + React boilerplate.
+
+    **Authentication.** `POST /auth/login` sets an HttpOnly `sid` cookie. Every
+    state-changing request made with a session must send the `csrf_token`
+    (returned by login and `/auth/me`) in the `X-CSRF-Token` header. Requests
+    whose `Origin`/`Referer` is not an allowed origin are rejected.
+
+    **Authorization.** Permissions are `(menu slug, action)` pairs evaluated
+    against the session's *active role*. A user with several roles must call
+    `PUT /auth/active-role` first; until then protected endpoints return
+    `403 ROLE_SELECTION_REQUIRED`. The super-admin role has every permission.
+
+    **Envelope.** Success: `{ "data": … , "meta"?: … }`. Error:
+    `{ "error": { "code", "message", "fields"?, "request_id" } }`.
+servers:
+  - url: /api/v1
+security:
+  - session: []
+tags:
+  - name: auth
+  - name: users
+  - name: roles
+  - name: menus
+  - name: profile
+
+paths:
+  /auth/options:
+    get:
+      tags: [auth]
+      security: []
+      summary: Public settings for the login screen
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      app_name: { type: string }
+                      registration_enabled: { type: boolean }
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Log in with username or email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              properties:
+                login: { type: string, description: Username or email (case-insensitive) }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Logged in. Sets the `sid` cookie.
+          headers:
+            Set-Cookie: { schema: { type: string } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/MeEnvelope" } } }
+        "401": { $ref: "#/components/responses/InvalidCredentials" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Log out (deletes the session)
+      responses:
+        "204": { description: Logged out }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Current user, roles, active role, permissions and CSRF token
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/MeEnvelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthenticated" }
+  /auth/active-role:
+    put:
+      tags: [auth]
+      summary: Select the active role for this session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [role_id], properties: { role_id: { type: string, format: uuid } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/MeEnvelope" } } } }
+        "422": { $ref: "#/components/responses/Validation" }
+  /auth/forgot-password:
+    post:
+      tags: [auth]
+      security: []
+      summary: Email a password-reset link (same response whether or not the email exists)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /auth/reset-password:
+    post:
+      tags: [auth]
+      security: []
+      summary: Set a new password with a reset token (revokes all sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password, password_confirmation]
+              properties:
+                token: { type: string }
+                password: { type: string, format: password }
+                password_confirmation: { type: string, format: password }
+      responses:
+        "200": { $ref: "#/components/responses/Message" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /auth/register:
+    post:
+      tags: [auth]
+      security: []
+      summary: Self-registration (only when AUTH_REGISTRATION_ENABLED=true)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, username, email, password, password_confirmation]
+              properties:
+                name: { type: string }
+                username: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                password_confirmation: { type: string, format: password }
+      responses:
+        "201": { $ref: "#/components/responses/Message" }
+        "404": { description: Registration disabled }
+        "422": { $ref: "#/components/responses/Validation" }
+  /auth/impersonation/stop:
+    post:
+      tags: [auth]
+      summary: Stop impersonating and return to the original admin session
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/MeEnvelope" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /navigation:
+    get:
+      tags: [menus]
+      summary: Sidebar for the active role (active menus the role can view)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/NavGroup" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /users:
+    get:
+      tags: [users]
+      summary: List users (permission users:view)
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/per_page"
+        - $ref: "#/components/parameters/q"
+        - { name: sort, in: query, schema: { type: string, enum: [name, username, email, is_active, created_at, last_login_at], default: created_at } }
+        - $ref: "#/components/parameters/order"
+        - { name: is_active, in: query, schema: { type: boolean } }
+        - { name: role_id, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/User" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [users]
+      summary: Create a user (users:create)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, username, email, password, password_confirmation]
+              properties:
+                name: { type: string, maxLength: 255 }
+                username: { type: string, minLength: 3, maxLength: 50, pattern: "^[a-zA-Z0-9._-]+$" }
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 8, description: "8–128 chars, at least one letter and one digit" }
+                password_confirmation: { type: string, format: password }
+                is_active: { type: boolean, default: true }
+                role_ids: { type: array, items: { type: string, format: uuid } }
+      responses:
+        "201": { $ref: "#/components/responses/UserResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /users/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [users]
+      summary: Get a user (users:view)
+      responses:
+        "200": { $ref: "#/components/responses/UserResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [users]
+      summary: Update name, username, email (users:update)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, username, email]
+              properties: { name: { type: string }, username: { type: string }, email: { type: string, format: email } }
+      responses:
+        "200": { $ref: "#/components/responses/UserResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+    delete:
+      tags: [users]
+      summary: Soft-delete a user (users:delete). Not yourself, not the last active super-admin.
+      responses:
+        "204": { description: Deleted }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /users/{id}/status:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    patch:
+      tags: [users]
+      summary: Activate/deactivate (users:update). Deactivation revokes the user's sessions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [is_active], properties: { is_active: { type: boolean } } }
+      responses:
+        "200": { $ref: "#/components/responses/UserResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /users/{id}/roles:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [users]
+      summary: Replace the user's roles (users:update)
+      description: |
+        Non-super-admins cannot change their own roles, cannot grant the super-admin role and cannot
+        grant a role whose permissions exceed their own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { role_ids: { type: array, items: { type: string, format: uuid } } } }
+      responses:
+        "200": { $ref: "#/components/responses/UserResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /users/{id}/password:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      tags: [users]
+      summary: Set a user's password (users:update). Revokes the user's sessions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, password_confirmation]
+              properties: { password: { type: string, format: password }, password_confirmation: { type: string, format: password } }
+      responses:
+        "204": { description: Updated }
+        "422": { $ref: "#/components/responses/Validation" }
+  /users/{id}/impersonate:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      tags: [users, auth]
+      summary: Log in as another (non-super-admin) user. Super-admin only.
+      responses:
+        "200": { description: Session replaced, content: { application/json: { schema: { $ref: "#/components/schemas/MeEnvelope" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /roles:
+    get:
+      tags: [roles]
+      summary: List roles (roles:view)
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/per_page"
+        - $ref: "#/components/parameters/q"
+        - { name: sort, in: query, schema: { type: string, enum: [name, created_at, user_count], default: name } }
+        - $ref: "#/components/parameters/order"
+        - { name: is_active, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Role" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+    post:
+      tags: [roles]
+      summary: Create a role (roles:create). Slug is derived from the name and immutable.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RoleInput" } } }
+      responses:
+        "201": { $ref: "#/components/responses/RoleResponse" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /roles/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [roles]
+      summary: Get a role (roles:view)
+      responses:
+        "200": { $ref: "#/components/responses/RoleResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [roles]
+      summary: Rename / (de)activate a role (roles:update). System roles cannot be deactivated.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RoleInput" } } }
+      responses:
+        "200": { $ref: "#/components/responses/RoleResponse" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+    delete:
+      tags: [roles]
+      summary: Soft-delete a role and its assignments (roles:delete). System roles cannot be deleted.
+      responses:
+        "204": { description: Deleted }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /roles/{id}/permissions:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [roles]
+      summary: Permission matrix for a role (roles:view)
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Matrix" } } } } }
+    put:
+      tags: [roles]
+      summary: Replace all grants of a role (roles:update)
+      description: |
+        Full replace in one transaction. The super-admin role is read-only (409). A
+        non-super-admin can only add grants they hold themselves (403).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: object
+                    required: [menu_id, actions]
+                    properties:
+                      menu_id: { type: string, format: uuid }
+                      actions: { type: array, items: { $ref: "#/components/schemas/Action" } }
+      responses:
+        "200":
+          description: Updated matrix
+          content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Matrix" } } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /actions:
+    get:
+      tags: [roles]
+      summary: Available actions (roles:view)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: array, items: { $ref: "#/components/schemas/ActionInfo" } } } }
+
+  /menu-groups:
+    get:
+      tags: [menus]
+      summary: Menu groups / sidebar sections (menus:view)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties: { id: { type: string, format: uuid }, name: { type: string }, sort_order: { type: integer } }
+  /menus:
+    get:
+      tags: [menus]
+      summary: List menus (menus:view)
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/per_page"
+        - $ref: "#/components/parameters/q"
+        - { name: sort, in: query, schema: { type: string, enum: [position, name, slug, sort_order, created_at], default: position } }
+        - $ref: "#/components/parameters/order"
+        - { name: type, in: query, schema: { type: string, enum: [main, child] } }
+        - { name: group_id, in: query, schema: { type: string, format: uuid } }
+        - { name: parent_id, in: query, schema: { type: string, format: uuid } }
+        - { name: is_active, in: query, schema: { type: boolean } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Menu" } }
+                  meta: { $ref: "#/components/schemas/PageMeta" }
+    post:
+      tags: [menus]
+      summary: Create a menu (menus:create)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MenuInput" } } }
+      responses:
+        "201": { $ref: "#/components/responses/MenuResponse" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /menus/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      tags: [menus]
+      summary: Get a menu (menus:view)
+      responses:
+        "200": { $ref: "#/components/responses/MenuResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [menus]
+      summary: Update a menu (menus:update). `slug` is ignored (immutable).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/MenuInput" } } }
+      responses:
+        "200": { $ref: "#/components/responses/MenuResponse" }
+        "422": { $ref: "#/components/responses/Validation" }
+    delete:
+      tags: [menus]
+      summary: Soft-delete a menu and its grants (menus:delete). Refused while it has submenus.
+      responses:
+        "204": { description: Deleted }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /profile:
+    get:
+      tags: [profile]
+      summary: Own profile (any active role)
+      responses:
+        "200": { $ref: "#/components/responses/ProfileResponse" }
+    put:
+      tags: [profile]
+      summary: Update own profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                phone: { type: string, pattern: "^(\\+62|62|08)[0-9]{8,13}$" }
+                birth_place: { type: string }
+                birth_date: { type: string, format: date }
+                address: { type: string, maxLength: 500 }
+      responses:
+        "200": { $ref: "#/components/responses/ProfileResponse" }
+        "422": { $ref: "#/components/responses/Validation" }
+  /profile/password:
+    put:
+      tags: [profile]
+      summary: Change own password (other sessions are revoked)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, password, password_confirmation]
+              properties:
+                current_password: { type: string, format: password }
+                password: { type: string, format: password }
+                password_confirmation: { type: string, format: password }
+      responses:
+        "204": { description: Changed }
+        "422": { $ref: "#/components/responses/Validation" }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: sid
+  parameters:
+    id: { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    per_page: { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    q: { name: q, in: query, description: Case-insensitive contains-search, schema: { type: string } }
+    order: { name: order, in: query, schema: { type: string, enum: [asc, desc] } }
+  responses:
+    Message:
+      description: OK
+      content:
+        application/json:
+          schema: { type: object, properties: { data: { type: object, properties: { message: { type: string } } } } }
+    Unauthenticated: { description: No valid session (UNAUTHENTICATED), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    InvalidCredentials: { description: Wrong login/password, inactive or deleted user (INVALID_CREDENTIALS), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Forbidden: { description: "FORBIDDEN, CSRF_FAILED or ROLE_SELECTION_REQUIRED", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    NotFound: { description: NOT_FOUND, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Conflict: { description: CONFLICT (business rule), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Validation: { description: VALIDATION_ERROR with per-field messages, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    TooManyRequests:
+      description: TOO_MANY_REQUESTS
+      headers: { Retry-After: { schema: { type: integer } } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    UserResponse: { description: User, content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/User" } } } } } }
+    RoleResponse: { description: Role, content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Role" } } } } } }
+    MenuResponse: { description: Menu, content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Menu" } } } } } }
+    ProfileResponse: { description: Profile, content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Profile" } } } } } }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [BAD_REQUEST, UNAUTHENTICATED, INVALID_CREDENTIALS, FORBIDDEN, CSRF_FAILED, ROLE_SELECTION_REQUIRED,
+                     NOT_FOUND, METHOD_NOT_ALLOWED, CONFLICT, PAYLOAD_TOO_LARGE, VALIDATION_ERROR, TOO_MANY_REQUESTS, INTERNAL_ERROR]
+            message: { type: string }
+            fields: { type: object, additionalProperties: { type: string } }
+            request_id: { type: string }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        total_pages: { type: integer }
+    Action: { type: string, enum: [view, create, update, delete, download] }
+    ActionInfo: { type: object, properties: { code: { $ref: "#/components/schemas/Action" }, label: { type: string } } }
+    RoleRef:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        is_super_admin: { type: boolean }
+    MeUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        username: { type: string }
+        email: { type: string }
+    MeEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            user: { $ref: "#/components/schemas/MeUser" }
+            roles: { type: array, items: { $ref: "#/components/schemas/RoleRef" } }
+            active_role: { oneOf: [{ $ref: "#/components/schemas/RoleRef" }, { type: "null" }] }
+            requires_role_selection: { type: boolean }
+            is_super_admin: { type: boolean }
+            permissions:
+              type: object
+              description: menu slug → granted actions (empty for super-admin, which has all)
+              additionalProperties: { type: array, items: { $ref: "#/components/schemas/Action" } }
+            csrf_token: { type: string }
+            impersonator: { oneOf: [{ $ref: "#/components/schemas/MeUser" }, { type: "null" }] }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        username: { type: string }
+        email: { type: string }
+        is_active: { type: boolean }
+        last_login_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        roles: { type: array, items: { $ref: "#/components/schemas/RoleRef" } }
+    Role:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        is_super_admin: { type: boolean }
+        is_system: { type: boolean }
+        is_active: { type: boolean }
+        user_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    RoleInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 100 }
+        is_active: { type: boolean }
+    MatrixMenu:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        is_active: { type: boolean }
+        granted: { type: array, items: { $ref: "#/components/schemas/Action" } }
+        children: { type: array, items: { $ref: "#/components/schemas/MatrixMenu" } }
+    Matrix:
+      type: object
+      properties:
+        role: { $ref: "#/components/schemas/Role" }
+        read_only: { type: boolean }
+        actions: { type: array, items: { $ref: "#/components/schemas/ActionInfo" } }
+        menus: { type: array, items: { $ref: "#/components/schemas/MatrixMenu" } }
+    Menu:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [main, child] }
+        group_id: { type: [string, "null"], format: uuid }
+        group_name: { type: [string, "null"] }
+        parent_id: { type: [string, "null"], format: uuid }
+        parent_name: { type: [string, "null"] }
+        name: { type: string }
+        slug: { type: string }
+        path: { type: [string, "null"] }
+        icon: { type: [string, "null"], description: Lucide icon name }
+        sort_order: { type: integer }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    MenuInput:
+      type: object
+      required: [name, type]
+      properties:
+        name: { type: string, maxLength: 100 }
+        slug: { type: string, pattern: "^[a-z][a-z0-9_]{1,62}$", description: Create only; derived from name when empty }
+        type: { type: string, enum: [main, child] }
+        group_id: { type: string, format: uuid, description: Required for main }
+        parent_id: { type: string, format: uuid, description: Required for child; must be a main menu }
+        path: { type: string, pattern: "^/[A-Za-z0-9/_:.-]*$", description: Required for child }
+        icon: { type: string, pattern: "^[a-z0-9-]{1,64}$", description: Required for main }
+        sort_order: { type: integer, minimum: 0 }
+        is_active: { type: boolean, default: true }
+    NavItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        path: { type: [string, "null"] }
+        icon: { type: [string, "null"] }
+        children: { type: array, items: { $ref: "#/components/schemas/NavItem" } }
+    NavGroup:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        items: { type: array, items: { $ref: "#/components/schemas/NavItem" } }
+    Profile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        username: { type: string }
+        email: { type: string }
+        phone: { type: [string, "null"] }
+        birth_place: { type: [string, "null"] }
+        birth_date: { type: [string, "null"], format: date }
+        address: { type: [string, "null"] }

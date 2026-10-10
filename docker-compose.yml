@@ -1,0 +1,88 @@
+# Full stack: PostgreSQL + migrations + Go API + nginx-served SPA.
+#
+#   cp .env.example .env        # set POSTGRES_PASSWORD at least
+#   docker compose up -d --build
+#   docker compose run --rm -e ADMIN_PASSWORD='…' api create-admin -email you@example.com
+#   open http://localhost:8080
+#
+# Values come from ./.env (see .env.example). Only the web port is published;
+# the database port is bound to 127.0.0.1 for local tools.
+name: boilerplate
+
+x-api-env: &api-env
+  APP_ENV: ${APP_ENV:-development}
+  APP_NAME: ${APP_NAME:-Admin Panel}
+  APP_BASE_URL: ${APP_BASE_URL:-http://localhost:8080}
+  APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:-http://localhost:8080}
+  # The API is only reachable through nginx, which overwrites forwarding headers.
+  TRUST_PROXY: "true"
+  DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-boilerplate}?sslmode=disable
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  SESSION_IDLE_TIMEOUT: ${SESSION_IDLE_TIMEOUT:-120m}
+  SESSION_MAX_LIFETIME: ${SESSION_MAX_LIFETIME:-168h}
+  AUTH_REGISTRATION_ENABLED: ${AUTH_REGISTRATION_ENABLED:-false}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  MAIL_DRIVER: ${MAIL_DRIVER:-log}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  MAIL_FROM: ${MAIL_FROM:-}
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-boilerplate}
+    volumes:
+      - db-data:/var/lib/postgresql
+    ports:
+      # 5433 avoids clashing with a locally installed PostgreSQL on 5432.
+      - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: applies pending migrations, then exits.
+  migrate:
+    build: ./backend
+    image: boilerplate-api:local
+    command: ["migrate", "up"]
+    environment: *api-env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: ./backend
+    image: boilerplate-api:local
+    restart: unless-stopped
+    environment: *api-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_APP_NAME: ${APP_NAME:-Admin Panel}
+    image: boilerplate-web:local
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+
+volumes:
+  db-data:
