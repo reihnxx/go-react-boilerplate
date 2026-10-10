@@ -251,3 +251,7 @@ cd frontend && npx shadcn@4.21.4 add <komponen>
 Kalau CLI menambahkan lagi `@import "shadcn/tailwind.css"` ke `index.css` atau `shadcn` ke `package.json`, hapus lagi. CSS yang sama sudah ada di `src/styles/shadcn.css`, dan package CLI membawa dependency dev dengan advisory keamanan.
 
 Warna brand dan design token lain adalah CSS variable di `frontend/src/index.css` (`:root` dan `.dark`).
+
+## Lisensi
+
+[MIT](LICENSE)

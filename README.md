@@ -247,3 +247,7 @@ cd frontend && npx shadcn@4.21.4 add <component>
 If the CLI re-adds `@import "shadcn/tailwind.css"` to `index.css` or `shadcn` to `package.json`, remove them again. The same CSS is already vendored in `src/styles/shadcn.css`, and the CLI package pulls in dev-only dependencies with known advisories.
 
 Brand colours and other design tokens are CSS variables in `frontend/src/index.css` (`:root` and `.dark`).
+
+## License
+
+[MIT](LICENSE)
